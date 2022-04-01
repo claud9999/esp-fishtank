@@ -30,7 +30,6 @@
 /* TODO: LUT to compensate for perceived brightness */
 
 typedef struct {
-    nvs_handle_t nvs_handle;
     esp_mqtt_client_handle_t client;
     int16_t brightness, power;
 } dimmer_data_t;
@@ -42,10 +41,15 @@ int dimmer_gpio[4] = {
     /* 0 */ 25
 };
 
-static void report_status(void *arg) {
-    esp_mqtt_client_handle_t client = (esp_mqtt_client_handle_t)arg;
-    int dimmer_num = 0;
+static int timer_countdown = 0;
 
+static void timer_handler(void *arg) {
+    int dimmer_num = 0;
+    esp_mqtt_client_handle_t client = (esp_mqtt_client_handle_t)arg;
+
+    if (timer_countdown-- > 0) return;
+
+    timer_countdown = 60; /* reset to report in 60s */
     for (dimmer_num = 0; dimmer_num < dimmer_cnt; dimmer_num++) {
         char brightness_s[32], mqtt_topic[128];
         snprintf(brightness_s, 32, "%d", dimmers[dimmer_num].brightness);
@@ -73,7 +77,36 @@ static void set_duty(esp_mqtt_client_handle_t client, int dimmer_num) {
         ESP_ERROR_CHECK(ledc_update_duty(LEDC_HIGH_SPEED_MODE, dimmer_num));
     }
 
-    report_status(client);
+    timer_countdown = 0;
+}
+
+static void set_bright(esp_mqtt_client_handle_t client, int dimmer_num, int16_t brightness) {
+    char nvs_name[16];
+    nvs_handle_t nvs_handle;
+
+    ESP_ERROR_CHECK(nvs_open("storage", NVS_READWRITE, &nvs_handle));
+    snprintf(nvs_name, 16, "bri/%d", dimmer_num);
+    nvs_set_i16(nvs_handle, nvs_name, brightness);
+
+    dimmers[dimmer_num].brightness = brightness;
+
+    nvs_commit(nvs_handle); nvs_close(nvs_handle);
+
+    set_duty(client, dimmer_num);
+}
+
+static void set_pow(esp_mqtt_client_handle_t client, int dimmer_num, int16_t power) {
+    char nvs_name[16];
+    dimmers[dimmer_num].power = power;
+    nvs_handle_t nvs_handle;
+
+    ESP_ERROR_CHECK(nvs_open("storage", NVS_READWRITE, &nvs_handle));
+    snprintf(nvs_name, 16, "pow/%d", dimmer_num);
+    nvs_set_i16(nvs_handle, nvs_name, power);
+    nvs_commit(nvs_handle);
+    nvs_close(nvs_handle);
+
+    set_duty(client, dimmer_num);
 }
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
@@ -86,14 +119,14 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             int dimmer_num = 0;
 
             esp_timer_create_args_t periodic_timer_args = {
-                .callback = report_status,
+                .callback = timer_handler,
                 .arg = client
             };
 
             ESP_LOGI(TAG, "MQTT connected");
 
             ESP_ERROR_CHECK(esp_timer_create(&periodic_timer_args, &periodic_timer));
-            ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, 60000000)); /* every 60s */
+            ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, 1000000)); /* every 1s */
 
             /* initialize dimmers */
             for(dimmer_num = 0; dimmer_num < dimmer_cnt; dimmer_num++) {
@@ -157,16 +190,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 memset(b, 0, sizeof(b));
                 strncpy(b, event->data, event->data_len);
 
-                dimmers[dimmer_num].brightness = atoi(b);
-
-                set_duty(client, dimmer_num);
+                set_bright(client, dimmer_num, atoi(b));
             }
             if (strncmp(event->topic + topic_offset, "/power", event->topic_len - topic_offset) == 0) {
                 ESP_LOGI(TAG, "power");
-                if(strncmp(event->data, "ON", 2) == 0) dimmers[dimmer_num].power = 1;
-                else dimmers[dimmer_num].power = 0;
-
-                set_duty(client, dimmer_num);
+                set_pow(client, dimmer_num, strncmp(event->data, "ON", 2) == 0 ? 1 : 0);
             }
         }
         break;
@@ -188,6 +216,9 @@ static void mqtt_app_start(void) {
 
 void app_main(void)
 {
+    int dimmer_num = 0;
+    char nvs_name[16];
+
     ESP_LOGI(TAG, "app_main");
 
     nvs_flash_init();
@@ -195,10 +226,17 @@ void app_main(void)
     esp_event_loop_create_default();
     example_connect();
 
-/*    ESP_ERROR_CHECK(nvs_open(NVS_NAME, NVS_READWRITE, &nvs_handle));
-    ESP_ERROR_CHECK(nvs_get_i16(nvs_handle, "brightness", &brightness));
-    ESP_ERROR_CHECK(nvs_get_i16(nvs_handle, "power", &power));
-    */
+    for(dimmer_num = 0; dimmer_num < dimmer_cnt; dimmer_num++) {
+        nvs_handle_t nvs_handle;
+
+        if (nvs_open("storage", NVS_READONLY, &nvs_handle) == ESP_OK) {
+            snprintf(nvs_name, 16, "bri/%d", dimmer_num);
+            if(nvs_get_i16(nvs_handle, nvs_name, &dimmers[dimmer_num].brightness) != ESP_OK) dimmers[dimmer_num].brightness = 0;
+            snprintf(nvs_name, 16, "pow/%d", dimmer_num);
+            if(nvs_get_i16(nvs_handle, nvs_name, &dimmers[dimmer_num].power) != ESP_OK) dimmers[dimmer_num].power = 0;
+            nvs_close(nvs_handle);
+        } else ESP_LOGE(TAG, "Unable to open NVS");
+    }
 
     mqtt_app_start();
 }

@@ -8,6 +8,7 @@
 #include "nvs_flash.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_https_ota.h"
 #include "protocol_examples_common.h"
 
 #include "freertos/FreeRTOS.h"
@@ -27,29 +28,66 @@
 #define TAG "fishtank"
 #define MQTT_PREFIX "/fishtank"
 
-/* TODO: LUT to compensate for perceived brightness */
-
 typedef struct {
     esp_mqtt_client_handle_t client;
-    int16_t brightness, power;
+    int16_t time, tgt, accum, brightness, power, delta;
+    bool delta_positive;
 } dimmer_data_t;
 
-dimmer_data_t dimmers[4];
-int dimmer_cnt = 1;
+dimmer_data_t dimmers[4] = { 0 };
+int dimmer_cnt = 4;
 
 int dimmer_gpio[4] = {
-    /* 0 */ 25
+    12, 13, 15, 23
 };
 
 static int timer_countdown = 0;
+
+static void set_duty(esp_mqtt_client_handle_t client, int dimmer_num) {
+    ESP_LOGI(TAG, "set_duty dimmer=%d brightness=%d", dimmer_num, dimmers[dimmer_num].brightness);
+
+    if (dimmers[dimmer_num].power == 0) {
+        ESP_ERROR_CHECK(ledc_set_duty(LEDC_HIGH_SPEED_MODE, dimmer_num, 0));
+        ESP_ERROR_CHECK(ledc_update_duty(LEDC_HIGH_SPEED_MODE, dimmer_num));
+    } else {
+        /* apply dumb 2 gamma curve */
+        int16_t duty = (int16_t)(((int32_t)dimmers[dimmer_num].brightness * (int32_t)dimmers[dimmer_num].brightness) / (int32_t)8192);
+        if (duty > 8191) duty = 8191;
+        ESP_LOGI(TAG, "  duty=%d", duty);
+
+        ESP_ERROR_CHECK(ledc_set_duty(LEDC_HIGH_SPEED_MODE, dimmer_num, duty));
+        ESP_ERROR_CHECK(ledc_update_duty(LEDC_HIGH_SPEED_MODE, dimmer_num));
+    }
+}
 
 static void timer_handler(void *arg) {
     int dimmer_num = 0;
     esp_mqtt_client_handle_t client = (esp_mqtt_client_handle_t)arg;
 
+    for (dimmer_num = 0; dimmer_num < dimmer_cnt; dimmer_num++) {
+        if(dimmers[dimmer_num].time == 0) continue;
+
+        dimmer_data_t *dimmer = &dimmers[dimmer_num];
+
+        dimmer->accum += dimmer->delta;
+
+        while(dimmer->accum > dimmer->time) {
+            dimmer->brightness += dimmer->delta_positive ? 1 : -1;
+            dimmer->accum -= dimmer->time;
+        }
+
+        if ((!dimmer->delta_positive && dimmer->brightness <= dimmer->tgt)
+            || (dimmer->delta_positive && dimmer->brightness >= dimmer->tgt)) {
+            dimmer->brightness = dimmer->tgt;
+            dimmer->time = 0;
+        }
+
+        set_duty(client, dimmer_num);
+    }
+
     if (timer_countdown-- > 0) return;
 
-    timer_countdown = 60; /* reset to report in 60s */
+    timer_countdown = 600; /* reset to report in 60s */
     for (dimmer_num = 0; dimmer_num < dimmer_cnt; dimmer_num++) {
         char brightness_s[32], mqtt_topic[128];
         snprintf(brightness_s, 32, "%d", dimmers[dimmer_num].brightness);
@@ -64,35 +102,50 @@ static void timer_handler(void *arg) {
 
 esp_timer_handle_t periodic_timer;
 
-static void set_duty(esp_mqtt_client_handle_t client, int dimmer_num) {
-    /* brightness = 3-255 */
-    int duty = (dimmers[dimmer_num].brightness - 3) * 32; /* 0-8032 */
-    if (dimmers[dimmer_num].brightness == 255) duty = 8191;
+static void set_bright(esp_mqtt_client_handle_t client, int dimmer_num, int16_t brightness) {
+    ESP_LOGI(TAG, "set_bright dimmer=%d brightness=%d", dimmer_num, brightness);
 
-    if (dimmers[dimmer_num].power == 0) {
-        ESP_ERROR_CHECK(ledc_set_duty(LEDC_HIGH_SPEED_MODE, dimmer_num, 0));
-        ESP_ERROR_CHECK(ledc_update_duty(LEDC_HIGH_SPEED_MODE, dimmer_num));
-    } else {
-        ESP_ERROR_CHECK(ledc_set_duty(LEDC_HIGH_SPEED_MODE, dimmer_num, duty));
-        ESP_ERROR_CHECK(ledc_update_duty(LEDC_HIGH_SPEED_MODE, dimmer_num));
-    }
+    char nvs_name[16];
+    nvs_handle_t nvs_handle;
+    ESP_ERROR_CHECK(nvs_open("storage", NVS_READWRITE, &nvs_handle));
+    snprintf(nvs_name, 16, "bri/%d", dimmer_num);
+    nvs_set_i16(nvs_handle, nvs_name, brightness);
+    nvs_commit(nvs_handle); nvs_close(nvs_handle);
+
+    dimmers[dimmer_num].brightness = brightness;
+    dimmers[dimmer_num].tgt = brightness;
+    dimmers[dimmer_num].time = 0;
+
+    set_duty(client, dimmer_num);
 
     timer_countdown = 0;
 }
 
-static void set_bright(esp_mqtt_client_handle_t client, int dimmer_num, int16_t brightness) {
+static void ramp_bright(esp_mqtt_client_handle_t client, int dimmer_num, int16_t tgt, int16_t seconds) {
+    ESP_LOGI(TAG, "ramp_bright dimmer=%d tgt=%d, seconds=%d", dimmer_num, tgt, seconds);
+
+    dimmer_data_t *dimmer = &dimmers[dimmer_num];
+
+    if (seconds == 0) return set_bright(client, dimmer_num, tgt);
+    if (tgt == dimmer->brightness) return;
+
     char nvs_name[16];
     nvs_handle_t nvs_handle;
-
     ESP_ERROR_CHECK(nvs_open("storage", NVS_READWRITE, &nvs_handle));
     snprintf(nvs_name, 16, "bri/%d", dimmer_num);
-    nvs_set_i16(nvs_handle, nvs_name, brightness);
-
-    dimmers[dimmer_num].brightness = brightness;
-
+    nvs_set_i16(nvs_handle, nvs_name, tgt);
     nvs_commit(nvs_handle); nvs_close(nvs_handle);
 
-    set_duty(client, dimmer_num);
+    dimmer->time = seconds * 10;
+    dimmer->tgt = tgt;
+    dimmer->accum = 0;
+    if(tgt > dimmer->brightness) {
+        dimmer->delta_positive = 1;
+        dimmer->delta = tgt - dimmer->brightness;
+    } else {
+        dimmer->delta_positive = 0;
+        dimmer->delta = dimmer->brightness - tgt;
+    }
 }
 
 static void set_pow(esp_mqtt_client_handle_t client, int dimmer_num, int16_t power) {
@@ -107,6 +160,8 @@ static void set_pow(esp_mqtt_client_handle_t client, int dimmer_num, int16_t pow
     nvs_close(nvs_handle);
 
     set_duty(client, dimmer_num);
+
+    timer_countdown = 0;
 }
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
@@ -126,7 +181,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             ESP_LOGI(TAG, "MQTT connected");
 
             ESP_ERROR_CHECK(esp_timer_create(&periodic_timer_args, &periodic_timer));
-            ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, 1000000)); /* every 1s */
+            ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, 100000)); /* every .1s */
 
             /* initialize dimmers */
             for(dimmer_num = 0; dimmer_num < dimmer_cnt; dimmer_num++) {
@@ -155,46 +210,84 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                 snprintf(mqtt_topic, 128, "%s/set/%d/power", MQTT_PREFIX, dimmer_num);
                 esp_mqtt_client_subscribe(client, mqtt_topic, 0);
+
                 snprintf(mqtt_topic, 128, "%s/set/%d/brightness", MQTT_PREFIX, dimmer_num);
                 esp_mqtt_client_subscribe(client, mqtt_topic, 0);
 
+                snprintf(mqtt_topic, 128, "%s/set/%d/ramp", MQTT_PREFIX, dimmer_num);
+                esp_mqtt_client_subscribe(client, mqtt_topic, 0);
+
+                snprintf(mqtt_topic, 128, "%s/ota", MQTT_PREFIX);
+                esp_mqtt_client_subscribe(client, mqtt_topic, 0);
+
                 set_duty(client, dimmer_num);
+                
+                timer_countdown = 0;
             }
         }
         break;
 
-        case MQTT_EVENT_DATA:
-        {
-            int topic_offset = 0;
+        case MQTT_EVENT_DATA: {
+            int offset = 0;
             int dimmer_num = 0;
+            char data[32];
+            int data_len = 31;
 
-            ESP_LOGI(TAG, "MQTT data topic=%.*s data=%.*s", event->topic_len, event->topic, event->data_len, event->data);
+            if (event->data_len < data_len) data_len = event->data_len;
+            memset(data, 0, sizeof(data));
+            strncpy(data, event->data, data_len);
 
-            if(strncmp(event->topic, MQTT_PREFIX "/set/", strlen(MQTT_PREFIX) + 5) != 0)
-                break;
-            topic_offset += strlen(MQTT_PREFIX) + 5;
-            for(dimmer_num = 0; dimmer_num < dimmer_cnt; dimmer_num++) {
-                if (event->topic[topic_offset] == '0' + dimmer_num) break;
-            }
-            if(dimmer_num == dimmer_cnt) break;
+            ESP_LOGI(TAG, "MQTT data topic=%.*s data=%.*s", event->topic_len, event->topic, data_len, data);
 
-            ESP_LOGI(TAG, "dimmer=%d", dimmer_num);
+            if(strncmp(event->topic, MQTT_PREFIX "/ota", strlen(MQTT_PREFIX) + 4) == 0) {
+                ESP_LOGW(TAG, "ota update starting");
+                esp_http_client_config_t client_config = {
+                    .url = "https://www.hotcat.org/ota/fishtank.bin"
+                };
 
-            while(topic_offset < event->topic_len && event->topic[topic_offset] != '/') topic_offset++;
+                esp_https_ota_config_t ota_config = {
+                    .http_config = &client_config
+                };
 
-            if (topic_offset == event->topic_len) break;
+                esp_err_t ret = esp_https_ota(&ota_config);
+                if (ret == ESP_OK) esp_restart();
+                else ESP_LOGE(TAG, "Firmware upgrade failed");
 
-            if (strncmp(event->topic + topic_offset, "/brightness", event->topic_len - topic_offset) == 0) {
-                ESP_LOGI(TAG, "brightness");
-                char b[10];
-                memset(b, 0, sizeof(b));
-                strncpy(b, event->data, event->data_len);
+                while (1) {
+                    vTaskDelay(1000 / portTICK_PERIOD_MS);
+                }
+                ESP_LOGW(TAG, "ota update complete");
+            } else if(strncmp(event->topic, MQTT_PREFIX "/set/", strlen(MQTT_PREFIX) + 5) == 0) {
+                offset += strlen(MQTT_PREFIX) + 5;
+                for(dimmer_num = 0; dimmer_num < dimmer_cnt; dimmer_num++) {
+                    if (event->topic[offset] == '0' + dimmer_num) break;
+                }
+                if(dimmer_num == dimmer_cnt) break;
 
-                set_bright(client, dimmer_num, atoi(b));
-            }
-            if (strncmp(event->topic + topic_offset, "/power", event->topic_len - topic_offset) == 0) {
-                ESP_LOGI(TAG, "power");
-                set_pow(client, dimmer_num, strncmp(event->data, "ON", 2) == 0 ? 1 : 0);
+                ESP_LOGI(TAG, "dimmer=%d", dimmer_num);
+
+                while(offset < event->topic_len && event->topic[offset] != '/') offset++;
+
+                if (offset == event->topic_len) break;
+
+                if (strncmp(event->topic + offset, "/brightness", event->topic_len - offset) == 0) {
+                    ESP_LOGI(TAG, "brightness");
+
+                    set_bright(client, dimmer_num, atoi(data));
+                }
+                if (strncmp(event->topic + offset, "/power", event->topic_len - offset) == 0) {
+                    ESP_LOGI(TAG, "power");
+                    set_pow(client, dimmer_num, strncmp(data, "ON", 2) == 0 ? 1 : 0);
+                }
+                if (strncmp(event->topic + offset, "/ramp", event->topic_len - offset) == 0) {
+                    ESP_LOGI(TAG, "ramp");
+                    for(offset = 0;
+                        data[offset] != '\0' && data[offset] != ' '; offset++) ;
+                    if (data[offset] != '\0') {
+                        data[offset++] = '\0';
+                        ramp_bright(client, dimmer_num, atoi(data), atoi(data + offset));
+                    }
+                }
             }
         }
         break;
@@ -221,7 +314,13 @@ void app_main(void)
 
     ESP_LOGI(TAG, "app_main");
 
-    nvs_flash_init();
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
+
     esp_netif_init();
     esp_event_loop_create_default();
     example_connect();

@@ -8,7 +8,6 @@
 #include "nvs_flash.h"
 #include "esp_event.h"
 #include "esp_netif.h"
-#include "esp_https_ota.h"
 #include "protocol_examples_common.h"
 
 #include "freertos/FreeRTOS.h"
@@ -44,7 +43,7 @@ int dimmer_gpio[4] = {
 static int timer_countdown = 0;
 
 static void set_duty(esp_mqtt_client_handle_t client, int dimmer_num) {
-    ESP_LOGI(TAG, "set_duty dimmer=%d brightness=%d", dimmer_num, dimmers[dimmer_num].brightness);
+/*    ESP_LOGI(TAG, "set_duty dimmer=%d brightness=%d", dimmer_num, dimmers[dimmer_num].brightness); */
 
     if (dimmers[dimmer_num].power == 0) {
         ESP_ERROR_CHECK(ledc_set_duty(LEDC_HIGH_SPEED_MODE, dimmer_num, 0));
@@ -53,7 +52,7 @@ static void set_duty(esp_mqtt_client_handle_t client, int dimmer_num) {
         /* apply dumb 2 gamma curve */
         int16_t duty = (int16_t)(((int32_t)dimmers[dimmer_num].brightness * (int32_t)dimmers[dimmer_num].brightness) / (int32_t)8192);
         if (duty > 8191) duty = 8191;
-        ESP_LOGI(TAG, "  duty=%d", duty);
+/*         ESP_LOGI(TAG, "  duty=%d", duty); */
 
         ESP_ERROR_CHECK(ledc_set_duty(LEDC_HIGH_SPEED_MODE, dimmer_num, duty));
         ESP_ERROR_CHECK(ledc_update_duty(LEDC_HIGH_SPEED_MODE, dimmer_num));
@@ -217,9 +216,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 snprintf(mqtt_topic, 128, "%s/set/%d/ramp", MQTT_PREFIX, dimmer_num);
                 esp_mqtt_client_subscribe(client, mqtt_topic, 0);
 
-                snprintf(mqtt_topic, 128, "%s/ota", MQTT_PREFIX);
-                esp_mqtt_client_subscribe(client, mqtt_topic, 0);
-
                 set_duty(client, dimmer_num);
                 
                 timer_countdown = 0;
@@ -239,25 +235,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
             ESP_LOGI(TAG, "MQTT data topic=%.*s data=%.*s", event->topic_len, event->topic, data_len, data);
 
-            if(strncmp(event->topic, MQTT_PREFIX "/ota", strlen(MQTT_PREFIX) + 4) == 0) {
-                ESP_LOGW(TAG, "ota update starting");
-                esp_http_client_config_t client_config = {
-                    .url = "https://www.hotcat.org/ota/fishtank.bin"
-                };
-
-                esp_https_ota_config_t ota_config = {
-                    .http_config = &client_config
-                };
-
-                esp_err_t ret = esp_https_ota(&ota_config);
-                if (ret == ESP_OK) esp_restart();
-                else ESP_LOGE(TAG, "Firmware upgrade failed");
-
-                while (1) {
-                    vTaskDelay(1000 / portTICK_PERIOD_MS);
-                }
-                ESP_LOGW(TAG, "ota update complete");
-            } else if(strncmp(event->topic, MQTT_PREFIX "/set/", strlen(MQTT_PREFIX) + 5) == 0) {
+            if(strncmp(event->topic, MQTT_PREFIX "/set/", strlen(MQTT_PREFIX) + 5) == 0) {
                 offset += strlen(MQTT_PREFIX) + 5;
                 for(dimmer_num = 0; dimmer_num < dimmer_cnt; dimmer_num++) {
                     if (event->topic[offset] == '0' + dimmer_num) break;

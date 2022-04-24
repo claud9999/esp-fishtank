@@ -26,8 +26,11 @@
 
 #include "driver/ledc.h"
 
+#include <ds18x20.h>
+
 #define TAG "fishtank"
 #define MQTT_PREFIX "/fishtank"
+#define SENSOR_GPIO 21
 
 extern const uint8_t server_cert_pem_start[] asm("_binary_hotcat_pem_start");
 extern const uint8_t server_cert_pem_end[] asm("_binary_hotcat_pem_end");
@@ -170,6 +173,25 @@ static void set_pow(esp_mqtt_client_handle_t client, int dimmer_num, int16_t pow
     timer_countdown = 0;
 }
 
+void sense_temp(esp_mqtt_client_handle_t client) {
+    ds18x20_addr_t addrs[1];
+    size_t sensor_count = 0;
+
+    ESP_ERROR_CHECK(ds18x20_scan_devices(SENSOR_GPIO, addrs, 1, &sensor_count));
+    if (!sensor_count) {
+        ESP_LOGW(TAG, "No sensors detected");
+        esp_mqtt_client_publish(client, MQTT_PREFIX "/temp", "-271", 0, 0, 0);
+        return;
+    }
+
+    float temp_c;
+    ds18x20_measure_and_read(SENSOR_GPIO, addrs[0], &temp_c);
+    ESP_LOGI(TAG, "temp %fF (%fC)", temp_c * 1.8 + 32, temp_c);
+    char temp_buf[16];
+    snprintf(temp_buf, 16, "%f", temp_c);
+    esp_mqtt_client_publish(client, MQTT_PREFIX "/temp", temp_buf, 0, 0, 0);
+}
+
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
     esp_mqtt_event_handle_t event = event_data;
     esp_mqtt_client_handle_t client = event->client;
@@ -232,6 +254,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             }
 
             esp_mqtt_client_subscribe(client, MQTT_PREFIX "/ota", 0);
+            esp_mqtt_client_subscribe(client, MQTT_PREFIX "/get/temp", 0);
         }
         break;
 
@@ -261,6 +284,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     ESP_LOGI(TAG, "ota good, restarting");
                     esp_restart();
                 }
+            } else if(strncmp(event->topic, MQTT_PREFIX "/get/temp", strlen(MQTT_PREFIX) + 9) == 0) {
+                sense_temp(client);
             } else if(strncmp(event->topic, MQTT_PREFIX "/set/", strlen(MQTT_PREFIX) + 5) == 0) {
                 offset += strlen(MQTT_PREFIX) + 5;
                 for(dimmer_num = 0; dimmer_num < dimmer_cnt; dimmer_num++) {

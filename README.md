@@ -1,58 +1,79 @@
-# ESP-MQTT sample application
-(See the README.md file in the upper level 'examples' directory for more information about examples.)
+# ESP-managed fishtank
 
-This example connects to the broker URI selected using `idf.py menuconfig` (using mqtt tcp transport) and as a demonstration subscribes/unsubscribes and send a message on certain topic.
-(Please note that the public broker is maintained by the community so may not be always available, for details please see this [disclaimer](https://iot.eclipse.org/getting-started/#sandboxes))
+This project is for automation of my paludarium.
+## Hardware
 
-Note: If the URI equals `FROM_STDIN` then the broker address is read from stdin upon application startup (used for testing)
+I use an ESP32 development board soldered to perfboard and connected to four
+MOSFET "drive modules".  Each drive module uses PWM to modulate the 12v power
+that goes to each of my LED tank lights, dimming their output. The board also
+connects to a DS18B20 temperature sensor board and probe. I use a USB cable to
+power the ESP32 and standard 12v DC power supplies for the lights.
 
-It uses ESP-MQTT library which implements mqtt client to connect to mqtt broker.
+### BoM
 
-## How to use example
+[ESP32 Dev Board](https://www.amazon.com/dp/B0924G5STN?psc=1&ref=ppx_yo2ov_dt_b_product_details)
+[Perfboard](https://www.amazon.com/dp/B072Z7Y19F?psc=1&ref=ppx_yo2ov_dt_b_product_details)
+[Temperature Probe](https://www.amazon.com/dp/B09TXP645Y?psc=1&ref=ppx_yo2ov_dt_b_product_details)
+[MOSFET Drivers](https://www.amazon.com/dp/B07NWD8W26?ref=ppx_yo2ov_dt_b_product_details&th=1)
 
-### Hardware Required
+## LED Fishtank Light Dimmer Control
 
-This example can be executed on any ESP32 board, the only required interface is WiFi and connection to internet.
+Dimmers are changed via MQTT commands, either to set them to a specific
+brightness or to set a ramp up/down target and time to reach the target for
+smooth transitions. Status of the PWM dimmers are reported out via MQTT
+messages as well.
 
-### Configure the project
+### Brightness vs. Duty
 
-* Open the project configuration menu (`idf.py menuconfig`)
-* Configure Wi-Fi or Ethernet under "Example Connection Configuration" menu. See "Establishing Wi-Fi or Ethernet Connection" section in [examples/protocols/README.md](../../README.md) for more details.
+"Duty" is the percentage of time when the PWM is "high" versus "low". 100%
+duty would mean the PWM signal would be high continuously, and 0% would be
+low. Duty is expressed, internally, as an integer number between 0-8191
+(inclusively) with 8191 being 100% duty cycle. _Note:_ that as duty increases
+the perceived brightness increases but not at a 1:1 ratio. This code includes
+a simple "gamma correction" algorithm to map 50% "brightness" to a duty cycle
+that would reasonably produce that requested brightness. The performance
+of this correction may depend on your lights and certainly is not
+confirmed scientifically.
 
-### Build and Flash
+### MQTT Commands
 
-Build the project and flash it to the board, then run monitor tool to view serial output:
+_prefix_/set/_dimmer #_/brightness : _brightness_ - Sets the brightness (0-8191,
+0 being completely dark, 8191 being full brightness) for this dimmer #.
 
-```
-idf.py -p PORT flash monitor
-```
+_prefix_/set/_dimmer #_/duty : _duty_ - Sets the explicit duty cycle (0-8191,
+0 being 0%, 8191 being 100%) for this dimmer #.
 
-(To exit the serial monitor, type ``Ctrl-]``.)
+_prefix_/set/_dimmer #_/power : "ON" or "OFF" - Turns the light on ("ON") or off ("OFF").
 
-See the Getting Started Guide for full steps to configure and use ESP-IDF to build projects.
+_prefix_/set/_dimmer #_/ramp : _brightness_ + " " + _seconds_ - Ramps the
+brightness from the current setting to the target over a period of N seconds.
 
-## Example Output
+### MQTT Telemetry
 
-```
-I (3714) event: sta ip: 192.168.0.139, mask: 255.255.255.0, gw: 192.168.0.2
-I (3714) system_api: Base MAC address is not set, read default base MAC address from BLK0 of EFUSE
-I (3964) MQTT_CLIENT: Sending MQTT CONNECT message, type: 1, id: 0000
-I (4164) MQTT_EXAMPLE: MQTT_EVENT_CONNECTED
-I (4174) MQTT_EXAMPLE: sent publish successful, msg_id=41464
-I (4174) MQTT_EXAMPLE: sent subscribe successful, msg_id=17886
-I (4174) MQTT_EXAMPLE: sent subscribe successful, msg_id=42970
-I (4184) MQTT_EXAMPLE: sent unsubscribe successful, msg_id=50241
-I (4314) MQTT_EXAMPLE: MQTT_EVENT_PUBLISHED, msg_id=41464
-I (4484) MQTT_EXAMPLE: MQTT_EVENT_SUBSCRIBED, msg_id=17886
-I (4484) MQTT_EXAMPLE: sent publish successful, msg_id=0
-I (4684) MQTT_EXAMPLE: MQTT_EVENT_SUBSCRIBED, msg_id=42970
-I (4684) MQTT_EXAMPLE: sent publish successful, msg_id=0
-I (4884) MQTT_CLIENT: deliver_publish, message_length_read=19, message_length=19
-I (4884) MQTT_EXAMPLE: MQTT_EVENT_DATA
-TOPIC=/topic/qos0
-DATA=data
-I (5194) MQTT_CLIENT: deliver_publish, message_length_read=19, message_length=19
-I (5194) MQTT_EXAMPLE: MQTT_EVENT_DATA
-TOPIC=/topic/qos0
-DATA=data
-```
+_prefix_/status/_dimmer #_/power : "ON" or "OFF"
+
+_prefix_/status/_dimmer #_/brightness : _brightness_ - 0-8191, with 0 being
+fully off and 8191 being full brightness.
+
+## Temperature Monitoring
+
+This project also monitors a temperature sensor. An MQTT command instructs the
+ESP32 to measure the temperature and the temperature is published
+via an MQTT message.
+
+### MQTT Commands
+
+_prefix_/get/temp : "" - Requests telemetry for the temperature probe.
+
+### MQTT Telemetry
+
+_prefix_/temp : _temp in C_
+
+## OTA Updates
+
+An update to the firmware can be initiated via an MQTT message, which causes
+the ESP32 microcontroller to connect to a URL to download an updated firmware.
+
+### MQTT Commands
+
+_prefix_/ota : "" - Requests an OTA update from the configured URL.

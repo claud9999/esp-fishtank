@@ -12,8 +12,11 @@ power the ESP32 and standard 12v DC power supplies for the lights.
 ### BoM
 
 [ESP32 Dev Board](https://www.amazon.com/dp/B0924G5STN?psc=1&ref=ppx_yo2ov_dt_b_product_details)
+
 [Perfboard](https://www.amazon.com/dp/B072Z7Y19F?psc=1&ref=ppx_yo2ov_dt_b_product_details)
+
 [Temperature Probe](https://www.amazon.com/dp/B09TXP645Y?psc=1&ref=ppx_yo2ov_dt_b_product_details)
+
 [MOSFET Drivers](https://www.amazon.com/dp/B07NWD8W26?ref=ppx_yo2ov_dt_b_product_details&th=1)
 
 ## LED Fishtank Light Dimmer Control

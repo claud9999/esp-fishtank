@@ -28,10 +28,6 @@
 
 #include <ds18x20.h>
 
-#define TAG "fishtank"
-#define MQTT_PREFIX "/fishtank"
-#define SENSOR_GPIO 21
-
 extern const uint8_t server_cert_pem_start[] asm("_binary_hotcat_pem_start");
 extern const uint8_t server_cert_pem_end[] asm("_binary_hotcat_pem_end");
 
@@ -41,11 +37,32 @@ typedef struct {
     bool delta_positive;
 } dimmer_data_t;
 
-dimmer_data_t dimmers[4] = { 0 };
-int dimmer_cnt = 4;
+dimmer_data_t dimmers[CONFIG_DIMMER_COUNT] = { 0 };
+int dimmer_cnt = CONFIG_DIMMER_COUNT;
 
-int dimmer_gpio[4] = {
-    12, 13, 15, 23
+int dimmer_gpio[CONFIG_DIMMER_COUNT] = {
+    CONFIG_DIMMER_GPIO_0,
+    #ifdef CONFIG_DIMMER_GPIO_1
+    CONFIG_DIMMER_GPIO_1,
+    #endif
+    #ifdef CONFIG_DIMMER_GPIO_2
+    CONFIG_DIMMER_GPIO_2,
+    #endif
+    #ifdef CONFIG_DIMMER_GPIO_3
+    CONFIG_DIMMER_GPIO_3,
+    #endif
+    #ifdef CONFIG_DIMMER_GPIO_4
+    CONFIG_DIMMER_GPIO_4,
+    #endif
+    #ifdef CONFIG_DIMMER_GPIO_5
+    CONFIG_DIMMER_GPIO_5,
+    #endif
+    #ifdef CONFIG_DIMMER_GPIO_6
+    CONFIG_DIMMER_GPIO_6,
+    #endif
+    #ifdef CONFIG_DIMMER_GPIO_7
+    CONFIG_DIMMER_GPIO_7,
+    #endif
 };
 
 static int timer_countdown = 0;
@@ -59,7 +76,7 @@ static void set_duty(int dimmer_num, int16_t duty) {
 }
 
 static void update_duty(int dimmer_num) {
-/*    ESP_LOGI(TAG, "update_duty dimmer=%d brightness=%d", dimmer_num, dimmers[dimmer_num].brightness); */
+/*    ESP_LOGI(CONFIG_LOG_TAG, "update_duty dimmer=%d brightness=%d", dimmer_num, dimmers[dimmer_num].brightness); */
 
     if (dimmers[dimmer_num].power == 0)
         set_duty(dimmer_num, 0);
@@ -100,19 +117,19 @@ static void timer_handler(void *arg) {
     for (dimmer_num = 0; dimmer_num < dimmer_cnt; dimmer_num++) {
         char brightness_s[32], mqtt_topic[128];
         snprintf(brightness_s, 32, "%d", dimmers[dimmer_num].brightness);
-        snprintf(mqtt_topic, 128, "%s/status/%d/power", MQTT_PREFIX, dimmer_num);
+        snprintf(mqtt_topic, 128, "%s/status/%d/power", CONFIG_MQTT_PREFIX, dimmer_num);
         esp_mqtt_client_publish(client, mqtt_topic, dimmers[dimmer_num].power ? "ON": "OFF", 0, 0, 0);
-        snprintf(mqtt_topic, 128, "%s/status/%d/brightness", MQTT_PREFIX, dimmer_num);
+        snprintf(mqtt_topic, 128, "%s/status/%d/brightness", CONFIG_MQTT_PREFIX, dimmer_num);
         esp_mqtt_client_publish(client, mqtt_topic, brightness_s, 0, 0, 0);
 
-        ESP_LOGI(TAG, "status dimmer=%d power=%s brightness=%d", dimmer_num, dimmers[dimmer_num].power ? "ON" : "OFF", dimmers[dimmer_num].brightness);
+        ESP_LOGI(CONFIG_LOG_TAG, "status dimmer=%d power=%s brightness=%d", dimmer_num, dimmers[dimmer_num].power ? "ON" : "OFF", dimmers[dimmer_num].brightness);
     };
 }
 
 esp_timer_handle_t periodic_timer;
 
 static void set_bright(esp_mqtt_client_handle_t client, int dimmer_num, int16_t brightness) {
-    ESP_LOGI(TAG, "set_bright dimmer=%d brightness=%d", dimmer_num, brightness);
+    ESP_LOGI(CONFIG_LOG_TAG, "set_bright dimmer=%d brightness=%d", dimmer_num, brightness);
 
     dimmers[dimmer_num].brightness = brightness;
     dimmers[dimmer_num].tgt = brightness;
@@ -124,7 +141,7 @@ static void set_bright(esp_mqtt_client_handle_t client, int dimmer_num, int16_t 
 }
 
 static void ramp_bright(esp_mqtt_client_handle_t client, int dimmer_num, int16_t tgt, int16_t seconds) {
-    ESP_LOGI(TAG, "ramp_bright dimmer=%d tgt=%d, seconds=%d", dimmer_num, tgt, seconds);
+    ESP_LOGI(CONFIG_LOG_TAG, "ramp_bright dimmer=%d tgt=%d, seconds=%d", dimmer_num, tgt, seconds);
 
     dimmer_data_t *dimmer = &dimmers[dimmer_num];
 
@@ -155,19 +172,19 @@ void sense_temp(esp_mqtt_client_handle_t client) {
     ds18x20_addr_t addrs[1];
     size_t sensor_count = 0;
 
-    ESP_ERROR_CHECK(ds18x20_scan_devices(SENSOR_GPIO, addrs, 1, &sensor_count));
+    ESP_ERROR_CHECK(ds18x20_scan_devices(CONFIG_TEMP_GPIO, addrs, 1, &sensor_count));
     if (!sensor_count) {
-        ESP_LOGW(TAG, "No sensors detected");
-        esp_mqtt_client_publish(client, MQTT_PREFIX "/temp", "-271", 0, 0, 0);
+        ESP_LOGW(CONFIG_LOG_TAG, "No sensors detected");
+        esp_mqtt_client_publish(client, CONFIG_MQTT_PREFIX "/temp", "-271", 0, 0, 0);
         return;
     }
 
     float temp_c;
-    ds18x20_measure_and_read(SENSOR_GPIO, addrs[0], &temp_c);
-    ESP_LOGI(TAG, "temp %fF (%fC)", temp_c * 1.8 + 32, temp_c);
+    ds18x20_measure_and_read(CONFIG_TEMP_GPIO, addrs[0], &temp_c);
+    ESP_LOGI(CONFIG_LOG_TAG, "temp %fF (%fC)", temp_c * 1.8 + 32, temp_c);
     char temp_buf[16];
     snprintf(temp_buf, 16, "%f", temp_c);
-    esp_mqtt_client_publish(client, MQTT_PREFIX "/temp", temp_buf, 0, 0, 0);
+    esp_mqtt_client_publish(client, CONFIG_MQTT_PREFIX "/temp", temp_buf, 0, 0, 0);
 }
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
@@ -184,7 +201,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 .arg = client
             };
 
-            ESP_LOGI(TAG, "MQTT connected");
+            ESP_LOGI(CONFIG_LOG_TAG, "MQTT connected");
 
             ESP_ERROR_CHECK(esp_timer_create(&periodic_timer_args, &periodic_timer));
             ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, 100000)); /* every .1s */
@@ -214,16 +231,16 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                 ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 
-                snprintf(mqtt_topic, 128, "%s/set/%d/power", MQTT_PREFIX, dimmer_num);
+                snprintf(mqtt_topic, 128, "%s/set/%d/power", CONFIG_MQTT_PREFIX, dimmer_num);
                 esp_mqtt_client_subscribe(client, mqtt_topic, 0);
 
-                snprintf(mqtt_topic, 128, "%s/set/%d/brightness", MQTT_PREFIX, dimmer_num);
+                snprintf(mqtt_topic, 128, "%s/set/%d/brightness", CONFIG_MQTT_PREFIX, dimmer_num);
                 esp_mqtt_client_subscribe(client, mqtt_topic, 0);
 
-                snprintf(mqtt_topic, 128, "%s/set/%d/duty", MQTT_PREFIX, dimmer_num);
+                snprintf(mqtt_topic, 128, "%s/set/%d/duty", CONFIG_MQTT_PREFIX, dimmer_num);
                 esp_mqtt_client_subscribe(client, mqtt_topic, 0);
 
-                snprintf(mqtt_topic, 128, "%s/set/%d/ramp", MQTT_PREFIX, dimmer_num);
+                snprintf(mqtt_topic, 128, "%s/set/%d/ramp", CONFIG_MQTT_PREFIX, dimmer_num);
                 esp_mqtt_client_subscribe(client, mqtt_topic, 0);
 
                 update_duty(dimmer_num);
@@ -231,8 +248,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 timer_countdown = 0;
             }
 
-            esp_mqtt_client_subscribe(client, MQTT_PREFIX "/ota", 0);
-            esp_mqtt_client_subscribe(client, MQTT_PREFIX "/get/temp", 0);
+            esp_mqtt_client_subscribe(client, CONFIG_MQTT_PREFIX "/ota", 0);
+            esp_mqtt_client_subscribe(client, CONFIG_MQTT_PREFIX "/get/temp", 0);
         }
         break;
 
@@ -246,10 +263,10 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             memset(data, 0, sizeof(data));
             strncpy(data, event->data, data_len);
 
-            ESP_LOGI(TAG, "MQTT data topic=%.*s data=%.*s", event->topic_len, event->topic, data_len, data);
+            ESP_LOGI(CONFIG_LOG_TAG, "MQTT data topic=%.*s data=%.*s", event->topic_len, event->topic, data_len, data);
 
-            if(strncmp(event->topic, MQTT_PREFIX "/ota", strlen(MQTT_PREFIX) + 4) == 0) {
-                ESP_LOGI(TAG, "ota started");
+            if(strncmp(event->topic, CONFIG_MQTT_PREFIX "/ota", strlen(CONFIG_MQTT_PREFIX) + 4) == 0) {
+                ESP_LOGI(CONFIG_LOG_TAG, "ota started");
                 esp_http_client_config_t config = {
                     .url = "https://web.lan/fishtank.bin",
                     .cert_pem = (char *)server_cert_pem_start,
@@ -259,40 +276,40 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     .http_config = &config,
                 };
                 if (esp_https_ota(&ota_config) == ESP_OK) {
-                    ESP_LOGI(TAG, "ota good, restarting");
+                    ESP_LOGI(CONFIG_LOG_TAG, "ota good, restarting");
                     esp_restart();
                 }
-            } else if(strncmp(event->topic, MQTT_PREFIX "/get/temp", strlen(MQTT_PREFIX) + 9) == 0) {
+            } else if(strncmp(event->topic, CONFIG_MQTT_PREFIX "/get/temp", strlen(CONFIG_MQTT_PREFIX) + 9) == 0) {
                 sense_temp(client);
-            } else if(strncmp(event->topic, MQTT_PREFIX "/set/", strlen(MQTT_PREFIX) + 5) == 0) {
-                offset += strlen(MQTT_PREFIX) + 5;
+            } else if(strncmp(event->topic, CONFIG_MQTT_PREFIX "/set/", strlen(CONFIG_MQTT_PREFIX) + 5) == 0) {
+                offset += strlen(CONFIG_MQTT_PREFIX) + 5;
                 for(dimmer_num = 0; dimmer_num < dimmer_cnt; dimmer_num++) {
                     if (event->topic[offset] == '0' + dimmer_num) break;
                 }
                 if(dimmer_num == dimmer_cnt) break;
 
-                ESP_LOGI(TAG, "dimmer=%d", dimmer_num);
+                ESP_LOGI(CONFIG_LOG_TAG, "dimmer=%d", dimmer_num);
 
                 while(offset < event->topic_len && event->topic[offset] != '/') offset++;
 
                 if (offset == event->topic_len) break;
 
                 if (strncmp(event->topic + offset, "/brightness", event->topic_len - offset) == 0) {
-                    ESP_LOGI(TAG, "brightness");
+                    ESP_LOGI(CONFIG_LOG_TAG, "brightness");
 
                     set_bright(client, dimmer_num, atoi(data));
                 }
                 if (strncmp(event->topic + offset, "/duty", event->topic_len - offset) == 0) {
-                    ESP_LOGI(TAG, "duty");
+                    ESP_LOGI(CONFIG_LOG_TAG, "duty");
 
                     set_duty(dimmer_num, atoi(data));
                 }
                 if (strncmp(event->topic + offset, "/power", event->topic_len - offset) == 0) {
-                    ESP_LOGI(TAG, "power");
+                    ESP_LOGI(CONFIG_LOG_TAG, "power");
                     set_pow(client, dimmer_num, strncmp(data, "ON", 2) == 0 ? 1 : 0);
                 }
                 if (strncmp(event->topic + offset, "/ramp", event->topic_len - offset) == 0) {
-                    ESP_LOGI(TAG, "ramp");
+                    ESP_LOGI(CONFIG_LOG_TAG, "ramp");
                     for(offset = 0;
                         data[offset] != '\0' && data[offset] != ' '; offset++) ;
                     if (data[offset] != '\0') {
@@ -311,7 +328,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
 static void mqtt_app_start(void) {
     esp_mqtt_client_config_t mqtt_cfg = {
-        .uri = CONFIG_BROKER_URL,
+        .uri = CONFIG_MQTT_BROKER_URL,
     };
 
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
@@ -321,7 +338,7 @@ static void mqtt_app_start(void) {
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "app_main");
+    ESP_LOGI(CONFIG_LOG_TAG, "app_main");
 
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {

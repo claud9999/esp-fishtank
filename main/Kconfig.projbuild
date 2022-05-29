@@ -1,13 +1,93 @@
-menu "Example Configuration"
-
-    config BROKER_URL
-        string "Broker URL"
-        default "mqtt://mqtt.eclipseprojects.io"
+menu "Fishtank Configuration"
+    config LOG_TAG
+        string "ESP Log Tag"
+        default "fishtank"
         help
-            URL of the broker to connect to
+            Text to prefix all app log messages.
 
-    config BROKER_URL_FROM_STDIN
-        bool
-        default y if BROKER_URL = "FROM_STDIN"
+    config MQTT_BROKER_URL
+        string "MQTT Broker URL"
+        default "mqtt://mqtt.lan"
+        help
+            URL of the MQTT broker to connect to.
 
+    config MQTT_PREFIX
+        string "MQTT topic prefix"
+        default "/fishtank"
+        help
+            The prefix to use for all MQTT messages/commands.
+
+    config TEMP_GPIO
+        int "Temperature probe GPIO"
+        default 21
+        help
+            The GPIO pin number for the temperature probe.
+
+    config DIMMER_COUNT
+        int "Dimmer count"
+        default 4
+        help
+            The number of PWM dimmer channels.
+
+    config DIMMER_GPIO_0
+        int "Dimmer GPIO 0"
+        default 12
+        help
+            The GPIO of dimmer #0.
+
+    if DIMMER_COUNT > 1
+    config DIMMER_GPIO_1
+        int "Dimmer GPIO 1"
+        default 13
+        help
+            The GPIO of dimmer #1.
+    endif
+
+    if DIMMER_COUNT > 2
+    config DIMMER_GPIO_2
+        int "Dimmer GPIO 2"
+        default 15
+        help
+            The GPIO of dimmer #2.
+    endif
+
+    if DIMMER_COUNT > 3
+    config DIMMER_GPIO_3
+        int "Dimmer GPIO 3"
+        default 23
+        help
+            The GPIO of dimmer #3.
+    endif
+
+    if DIMMER_COUNT > 4
+    config DIMMER_GPIO_4
+        int "Dimmer GPIO 4"
+        default 0
+        help
+            The GPIO of dimmer #4.
+    endif
+
+    if DIMMER_COUNT > 5
+    config DIMMER_GPIO_5
+        int "Dimmer GPIO 5"
+        default 0
+        help
+            The GPIO of dimmer #5.
+    endif
+
+    if DIMMER_COUNT > 6
+    config DIMMER_GPIO_6
+        int "Dimmer GPIO 6"
+        default 0
+        help
+            The GPIO of dimmer #6.
+    endif
+
+    if DIMMER_COUNT > 7
+    config DIMMER_GPIO_7
+        int "Dimmer GPIO 7"
+        default 0
+        help
+            The GPIO of dimmer #7.
+    endif
 endmenu
